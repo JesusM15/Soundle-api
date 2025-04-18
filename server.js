@@ -3,6 +3,7 @@ import fetch from "node-fetch";
 import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios";
+import songs from "./data.js";
 
 dotenv.config();  
 
@@ -45,7 +46,7 @@ app.get("/token", async (req, res) => {
     res.json({ access_token: token });
 });
 
-const artistNames = ["Taylor Swift", "Sabrina Carpenter", "Ed Sheeran", "Olivia Rodrigo"];
+const artistNames = ["Taylor Swift", "Sabrina Carpenter"];
 app.get("/artists", async (req, res) => {
     const token = await getSpotifyToken();
     const artists = [];
@@ -79,26 +80,43 @@ app.get("/songs/:artistId", async (req, res) => {
         headers: { Authorization: `Bearer ${token}` },
     });
 
-    const response = await axios.get(`https://api.spotify.com/v1/artists/${artistId}/top-tracks`, {
+    const tracks = songs[artist.name || artist.data.name];
+    
+    res.json(tracks);
+});
+
+app.get("/secret_song/:artistId", async (req, res) => {
+    const token = await getSpotifyToken();
+    const { artistId } = req.params;
+
+    try{
+        const artist = await axios.get(`https://api.spotify.com/v1/artists/${artistId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+        });
+
+        const tracks = songs[artist.data.name || artist.name]?.filter(song =>  song.src !== null);
+
+        if (tracks.length === 0) {
+            return res.status(404).json({ error: "No hay canciones disponibles con un enlace válido." });
+        }
+        const secretSong = tracks[Math.floor(Math.random() * tracks.length)];
+
+        res.json(secretSong);
+    } catch (error) {
+        console.error("Error al obtener la canción secreta:", error);
+        res.status(500).json({ error: "Hubo un error al obtener la canción secreta." });
+    }
+})
+
+app.get("/artist/:artistId", async(req, res) => {
+    const token = await getSpotifyToken();
+    const { artistId } = req.params;
+
+    const artist = await axios.get(`https://api.spotify.com/v1/artists/${artistId}`, {
         headers: { Authorization: `Bearer ${token}` },
-        params: { market: "US" }
     });
-
-    const shuffledTracks = response.data.tracks
-    .map(track => ({ 
-        name: track.name, 
-        preview: track.preview_url, 
-        image: track.album.images[0]?.url,
-        is_playable: track.is_playable,
-        album: track.album,
-        artists: artist.data,
-        external_urls: track?.external_urls?.spotify,
-        uri: track?.uri
-    }))
-    .sort(() => Math.random() - 0.5);  // Reordenar aleatoriamente
-    console.log("data:", response.data.tracks[0]);
-
-    res.json(shuffledTracks);
+    
+    res.json(artist?.data);
 });
 
 app.get("/album/:albumId", async (req, res) => {
