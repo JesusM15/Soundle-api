@@ -14,7 +14,6 @@ app.use(cors(
 
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
-const LASTFM_API_KEY = process.env.LASTFM_API_KEY;
 
 let cachedToken = null;
 let tokenExpiration = 0;
