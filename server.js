@@ -4,6 +4,10 @@ import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios";
 import songs from "./data.js";
+import crypto from "crypto";
+import https from "https";
+
+const secretMap = {};
 
 dotenv.config();  
 
@@ -98,14 +102,35 @@ app.get("/secret_song/:artistId", async (req, res) => {
         if (tracks.length === 0) {
             return res.status(404).json({ error: "No hay canciones disponibles con un enlace válido." });
         }
-        const secretSong = tracks[Math.floor(Math.random() * tracks.length)];
+        const secretSong = tracks[Math.floor(Math.random() * tracks.length)];   
+        const secretId = crypto.randomBytes(6).toString("hex");
+        secretMap[secretId] = {
+            preview_url: secretSong.src,
+            artist: artist.data.name
+        };
 
-        res.json(secretSong);
+        res.json(secretId);
     } catch (error) {
         console.error("Error al obtener la canción secreta:", error);
         res.status(500).json({ error: "Hubo un error al obtener la canción secreta." });
     }
 })
+
+app.get("/audio/secret/:id", async (req, res) => {
+  const { id } = req.params;
+  const entry = secretMap[id];
+  if (!entry) {
+    return res.status(404).json({ error: "Audio no encontrado o expirado." });
+  }
+
+  https.get(entry.preview_url, (audioRes) => {
+    res.setHeader("Content-Type", "audio/mpeg");
+    audioRes.pipe(res);
+  }).on("error", (err) => {
+    console.error("Error al reenviar audio:", err);
+    res.status(500).json({ error: "Error al reenviar audio" });
+  });
+});
 
 app.get("/artist/:artistId", async(req, res) => {
     const token = await getSpotifyToken();
