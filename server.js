@@ -109,7 +109,7 @@ app.get("/secret_song/:artistId", async (req, res) => {
             artist: artist.data.name
         };
 
-        res.json(secretId);
+        res.json({ secretId: secretId, song: secretSong });
     } catch (error) {
         console.error("Error al obtener la canción secreta:", error);
         res.status(500).json({ error: "Hubo un error al obtener la canción secreta." });
