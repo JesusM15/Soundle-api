@@ -1,172 +1,195 @@
 import express from "express";
-import fetch from "node-fetch";
 import cors from "cors";
 import dotenv from "dotenv";
 import axios from "axios";
-import songs from "./data.js";
 import crypto from "crypto";
 import https from "https";
 
-const secretMap = {};
-
-dotenv.config();  
+dotenv.config();
 
 const app = express();
-app.use(cors(
+app.use(cors());
 
-)); 
+const DEEZER_URL = "https://api.deezer.com";
+const secretMap = {};
+const trackCache = {}; // Cache: artistId -> tracks[], avoids re-fetching on every game
 
-const CLIENT_ID = process.env.CLIENT_ID;
-const CLIENT_SECRET = process.env.CLIENT_SECRET;
+const artistNames = [
+    "Taylor Swift", "Sabrina Carpenter", "Justin Bieber", "Ariana Grande", "BTS",
+    "Queen", "The Beatles", "Michael Jackson", "Doblecero", "Junior H",
+    "Radiohead", "David Bowie", "Geese", "The Velvet Underground"
+];
 
-let cachedToken = null;
-let tokenExpiration = 0;
-
-const getSpotifyToken = async () => {
-    const now = Date.now();
-    if (cachedToken && now < tokenExpiration) {
-        return cachedToken; 
+// Helper to fetch Deezer artist data by name
+const getDeezerArtist = async (name) => {
+    try {
+        const response = await axios.get(`${DEEZER_URL}/search/artist`, {
+            params: { q: name }
+        });
+        if (response.data.data && response.data.data.length > 0) {
+            return response.data.data[0];
+        }
+        return null;
+    } catch (error) {
+        console.error(`Error fetching artist ${name}:`, error.message);
+        return null;
     }
-
-    const response = await fetch("https://accounts.spotify.com/api/token", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            Authorization: "Basic " + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString("base64"),
-        },
-        body: "grant_type=client_credentials",
-    });
-
-    const data = await response.json();
-    cachedToken = data.access_token;
-    tokenExpiration = now + data.expires_in * 1000; 
-
-    return cachedToken;
 };
 
-app.get("/token", async (req, res) => {
-    const token = await getSpotifyToken();
-    res.json({ access_token: token });
-});
+// Normalize album name — strips edition markers so yellow hint works across versions
+const normalizeAlbum = (title) => (title || "Unknown Album")
+    .replace(/\s*\((Taylor's Version|Deluxe|Standard|Platinum|Special|Digital|Expanded|Anniversary|Collector|3am Edition|Til Dawn Edition|The Anthology)[^)]*\)/gi, "")
+    .replace(/\s*(Taylor's Version)/gi, "")
+    .trim();
 
-const artistNames = ["Taylor Swift", "Sabrina Carpenter"];
-app.get("/artists", async (req, res) => {
-    const token = await getSpotifyToken();
-    const artists = [];
+// Normalize song title — strips remaster/live/version suffixes for de-duplication
+const normalizeSongTitle = (title) => title
+    .toLowerCase()
+    .replace(/\s*-\s*(remaster(ed)?|live|mono|stereo|single|edit|version|mix|take|demo|acoustic|radio|original|anniversary|\d{4}.*).*$/i, "")
+    .replace(/\s*\((remaster(ed)?|live|mono|stereo|single|edit|version|mix|take|demo|acoustic|radio|original|anniversary|\d{4}.*).*\)/i, "")
+    .trim();
 
-    for (const name of artistNames) {
-        const response = await axios.get(`https://api.spotify.com/v1/search`, {
-            headers: { Authorization: `Bearer ${token}` },
-            params: { q: name, type: "artist", limit: 1 }
+// Fetch top 50 most popular tracks (ordered by Deezer popularity)
+const getArtistTracks = async (artistId, artistName) => {
+    try {
+        const response = await axios.get(`${DEEZER_URL}/artist/${artistId}/top`, {
+            params: { limit: 60 } // Fetch 60 to account for any that lack previews
         });
 
-        if (response.data.artists.items.length > 0) {
-            const artist = response.data.artists.items[0];
+        const uniqueTracksMap = new Map();
+        response.data.data.forEach(track => {
+            const key = normalizeSongTitle(track.title);
+            if (!uniqueTracksMap.has(key)) {
+                uniqueTracksMap.set(key, {
+                    id: track.id,
+                    name: track.title,
+                    src: track.preview || null,
+                    artist: artistName,
+                    album: normalizeAlbum(track.album?.title)
+                });
+            }
+        });
+
+        return Array.from(uniqueTracksMap.values());
+    } catch (error) {
+        console.error(`Error fetching tracks for ${artistName}:`, error.message);
+        return [];
+    }
+};
+
+// ─── Routes ────────────────────────────────────────────────────────────────────
+
+app.get("/token", (req, res) => {
+    res.json({ access_token: "deezer_public_access" });
+});
+
+app.get("/artists", async (req, res) => {
+    const artists = [];
+    for (const name of artistNames) {
+        const artist = await getDeezerArtist(name);
+        if (artist) {
             artists.push({
                 id: artist.id,
                 name: artist.name,
-                image: artist.images.length > 0 ? artist.images[0].url : null,
-                followers: artist?.followers?.total,
-                link: artist?.external_urls?.spotify
+                image: artist.picture_medium,
+                followers: artist.nb_fan,
+                link: artist.link,
+                images: [{ url: artist.picture_medium }]
             });
         }
     }
-
     res.json(artists);
 });
 
 app.get("/songs/:artistId", async (req, res) => {
-    const token = await getSpotifyToken();
     const { artistId } = req.params;
-
-    const artist = await axios.get(`https://api.spotify.com/v1/artists/${artistId}`, {
-        headers: { Authorization: `Bearer ${token}` },
-    });
-
-    const tracks = songs[artist.name || artist.data.name];
-    
-    res.json(tracks);
+    try {
+        if (trackCache[artistId]) {
+            return res.json(trackCache[artistId]);
+        }
+        const artistRes = await axios.get(`${DEEZER_URL}/artist/${artistId}`);
+        const tracks = await getArtistTracks(artistId, artistRes.data.name);
+        trackCache[artistId] = tracks;
+        res.json(tracks);
+    } catch (error) {
+        res.status(500).json({ error: "Error al obtener canciones" });
+    }
 });
 
 app.get("/secret_song/:artistId", async (req, res) => {
-    const token = await getSpotifyToken();
     const { artistId } = req.params;
-
-    try{
-        const artist = await axios.get(`https://api.spotify.com/v1/artists/${artistId}`, {
-            headers: { Authorization: `Bearer ${token}` },
-        });
-
-        const tracks = songs[artist.data.name || artist.name]?.filter(song =>  song.src !== null);
-
-        if (tracks.length === 0) {
-            return res.status(404).json({ error: "No hay canciones disponibles con un enlace válido." });
+    try {
+        let tracks = trackCache[artistId];
+        if (!tracks) {
+            const artistRes = await axios.get(`${DEEZER_URL}/artist/${artistId}`);
+            tracks = await getArtistTracks(artistId, artistRes.data.name);
+            trackCache[artistId] = tracks;
         }
-        const secretSong = tracks[Math.floor(Math.random() * tracks.length)];   
+
+        const validTracks = tracks.filter(t => t.src);
+        if (validTracks.length === 0) {
+            return res.status(404).json({ error: "No hay canciones disponibles." });
+        }
+
+        const secretSong = validTracks[Math.floor(Math.random() * validTracks.length)];
         const secretId = crypto.randomBytes(6).toString("hex");
+
         secretMap[secretId] = {
             preview_url: secretSong.src,
-            artist: artist.data.name
+            artist: secretSong.artist
         };
 
-        res.json({ secretId: secretId, song: secretSong });
+        res.json({ secretId, song: secretSong });
     } catch (error) {
-        console.error("Error al obtener la canción secreta:", error);
-        res.status(500).json({ error: "Hubo un error al obtener la canción secreta." });
+        res.status(500).json({ error: "Error al obtener canción secreta" });
     }
-})
-
-app.get("/audio/secret/:id", async (req, res) => {
-  const { id } = req.params;
-  const entry = secretMap[id];
-  if (!entry) {
-    return res.status(404).json({ error: "Audio no encontrado o expirado." });
-  }
-
-  https.get(entry.preview_url, (audioRes) => {
-    res.setHeader("Content-Type", "audio/mpeg");
-    audioRes.pipe(res);
-  }).on("error", (err) => {
-    console.error("Error al reenviar audio:", err);
-    res.status(500).json({ error: "Error al reenviar audio" });
-  });
 });
 
-app.get("/artist/:artistId", async(req, res) => {
-    const token = await getSpotifyToken();
-    const { artistId } = req.params;
+app.get("/audio/secret/:id", async (req, res) => {
+    const { id } = req.params;
+    const entry = secretMap[id];
+    if (!entry) {
+        return res.status(404).json({ error: "Audio no encontrado o expirado." });
+    }
 
-    const artist = await axios.get(`https://api.spotify.com/v1/artists/${artistId}`, {
-        headers: { Authorization: `Bearer ${token}` },
+    https.get(entry.preview_url, (audioRes) => {
+        res.setHeader("Content-Type", "audio/mpeg");
+        audioRes.pipe(res);
+    }).on("error", (err) => {
+        console.error("Error al reenviar audio:", err.message);
+        res.status(500).json({ error: "Error al reenviar audio" });
     });
-    
-    res.json(artist?.data);
+});
+
+app.get("/artist/:artistId", async (req, res) => {
+    const { artistId } = req.params;
+    try {
+        const response = await axios.get(`${DEEZER_URL}/artist/${artistId}`);
+        const artist = response.data;
+        res.json({
+            ...artist,
+            images: [{ url: artist.picture_medium }]
+        });
+    } catch (error) {
+        res.status(500).json({ error: "Error al obtener artista" });
+    }
 });
 
 app.get("/album/:albumId", async (req, res) => {
-    const token = await getSpotifyToken();
     const { albumId } = req.params;
-
     try {
-        const response = await axios.get(`https://api.spotify.com/v1/albums/${albumId}/tracks`, {
-            headers: { Authorization: `Bearer ${token}` }
-        });
-
-        const albumTracks = response.data.items.map(track => ({
-            name: track.name,
-            preview: track.preview_url,
-            duration_ms: track.duration_ms, 
-            is_playable: track.is_playable, 
-            artists: track.artists.map(artist => artist.name).join(", "), 
-            album_image: track.album?.images[0]?.url 
+        const response = await axios.get(`${DEEZER_URL}/album/${albumId}/tracks`);
+        const albumTracks = response.data.data.map(track => ({
+            name: track.title,
+            preview: track.preview,
+            duration_ms: track.duration * 1000,
+            artist: track.artist?.name,
         }));
-
         res.json(albumTracks);
     } catch (error) {
-        console.error("Error al obtener las canciones del álbum:", error);
-        res.status(500).json({ error: "Hubo un error al obtener las canciones del álbum" });
+        res.status(500).json({ error: "Error al obtener canciones del álbum" });
     }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🎵 Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
