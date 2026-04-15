@@ -16,7 +16,7 @@ const trackCache = {}; // Cache: artistId -> tracks[], avoids re-fetching on eve
 
 const artistNames = [
     "Taylor Swift", "Sabrina Carpenter", "Justin Bieber", "Ariana Grande", "BTS",
-    "Queen", "The Beatles", "Michael Jackson", "Doblecero", "Junior H",
+    "Queen", "The Beatles", "Michael Jackson", "Doblecero", "Zarcort", "Luis Miguel", "Cristian Castro", "Jose Jose", "Junior H",
     "Radiohead", "David Bowie", "Geese", "The Velvet Underground"
 ];
 
